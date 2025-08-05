@@ -6,7 +6,7 @@ This is the code for our paper titled: 'Dual Operation Aggregation Graph Neural 
 @inproceedings{zhao2025fjsp,
   title={Dual Operation Aggregation Graph Neural Networks for Solving Flexible Job-Shop Scheduling Problem with Reinforcement Learning},
   author={Peng Zhao, You Zhou, Di Wang, Zhiguang Cao, Yubin Xiao, Xuan Wu, Yuanshu Li, Hongjia Liu, Wei Du, Yuan Jiang, Liupu Wang},
-  booktitle={Proceedings of the ACM Web Conference 2024},
+  booktitle={Proceedings of the ACM Web Conference 2025},
   year={2025}
 }
 ```
