@@ -11,6 +11,10 @@ This is the code for our paper titled: 'Dual Operation Aggregation Graph Neural 
 }
 ```
 
+## Apologize!
+We sincerely apologize for mistakenly providing the debug version of `doagnn.py` earlier, which resulted in excessively long inference times. The correct version of `doagnn.py` was uploaded on 10/23/2025.
+
+
 ### Requirements
 python $=$ 3.8.17<br>
 torch $=$ 1.11.0+cu113<br>
