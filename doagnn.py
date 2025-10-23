@@ -1,3 +1,5 @@
+import time
+
 import torch
 from torch import nn
 
@@ -10,7 +12,8 @@ class GraphSAGE(nn.Module):
         self.out_size_ope = out_size_ope
         self.num_head = num_head
         self.leaky_relu = nn.LeakyReLU(negative_slope)
-        self.agg_z_j = nn.Sequential(  # Learning the node features among different jobs
+
+        self.agg_z_j = nn.Sequential(
             nn.Linear(self.out_size_ope, self.hidden_size_ope),
             nn.ELU(),
             nn.Linear(self.hidden_size_ope, self.out_size_ope),
@@ -20,69 +23,76 @@ class GraphSAGE(nn.Module):
             nn.ELU(),
             nn.Linear(self.hidden_size_ope, self.out_size_ope),
         )
-        self.agg_f_w = nn.Sequential(  # Learning the node features among same jobs
+        self.agg_f_w = nn.Sequential(
             nn.Linear(self.out_size_ope, self.hidden_size_ope),
             nn.ELU(),
             nn.Linear(self.hidden_size_ope, self.out_size_ope),
         )
+
         for m in self.modules():
             if isinstance(m, torch.nn.Linear):
                 nn.init.kaiming_normal_(m.weight.detach())
                 m.bias.detach().zero_()
 
-    def aggregate(self, feat_pre, feat_sub, r, agg_func='MEAN'):
-        if agg_func == 'MEAN':
-            feat_ag = torch.cat((feat_pre.unsqueeze(0).clone(), (feat_sub * r).unsqueeze(0).clone()), dim=0)
-            feat_ag = self.agg_f_w(feat_ag)
-            feat_ag = torch.sum(feat_ag, dim=0)
-            return feat_ag
-        elif agg_func == 'MAX':
-            return None
-        else:
-            return None
+    def aggregate_dif(self, feat_wait: torch.Tensor, r: float, valid_mask: torch.Tensor):
 
+        vm = valid_mask.unsqueeze(-1)
+        feat_valid = feat_wait * vm
+        sum_all = feat_valid.sum(dim=1, keepdim=True)
+        K = valid_mask.sum(dim=1, keepdim=True).clamp(min=1).to(feat_wait.dtype)
 
-    def aggregate_dif(self, feat_wait, r):
-        feat_age = feat_wait.clone()
-        for i_j in range(len(feat_wait)):
-            for i_j_2 in range(len(feat_wait)):
-                if i_j != i_j_2:
-                    feat_wait[i_j] += r*feat_age[i_j_2]
-            feat_wait[i_j] /= len(feat_wait)
-            feat_wait[i_j] = self.agg_z_j(feat_wait[i_j].clone())
-        feat_age = feat_wait.clone()
-        return feat_age
-
+        mixed = (feat_wait + (sum_all - feat_wait) * (feat_wait.new_tensor(r))) / K.unsqueeze(-1)
+        mixed = self.agg_z_j(mixed)
+        return mixed * vm + feat_wait * (~vm)
 
     def forward(self, ope_step_batch, end_ope_biases_batch, opes_appertain_batch, discount_r, batch_idxes, agg_func, features):
-        feat_opt = features[0].clone()
-        for i_batch in range(len(batch_idxes.detach().tolist())):
-            first_deal_index = 0
-            no_deal = True
-            for i_sum_job in range(len(ope_step_batch[batch_idxes[i_batch]])):
-                if ope_step_batch[batch_idxes[i_batch]][i_sum_job] <= end_ope_biases_batch[batch_idxes[i_batch]][i_sum_job]:
-                    no_deal = False
-                    first_deal_index = i_sum_job
-                    break
-            if no_deal:
-                raise Exception("None")
-            features_all = torch.unsqueeze(feat_opt[i_batch][ope_step_batch[batch_idxes[i_batch]][first_deal_index]], dim=0)
-            save_index = [first_deal_index]
-            for i_sum_job in range(len(ope_step_batch[batch_idxes[i_batch]])):
-                count = 0
-                for i_num_job in range(end_ope_biases_batch[batch_idxes[i_batch]][i_sum_job], ope_step_batch[batch_idxes[i_batch]][i_sum_job], -1):
-                    count += 1
-                    discount_r_now = pow(discount_r, i_num_job - ope_step_batch[batch_idxes[i_batch]][i_sum_job])
-                    feat_opt[i_batch][i_num_job] = self.aggregate(feat_opt[i_batch][i_num_job],
-                                                                  feat_opt[i_batch][i_num_job - 1], discount_r_now, agg_func)
-                if i_sum_job != first_deal_index:
-                    if ope_step_batch[batch_idxes[i_batch]][i_sum_job] <= end_ope_biases_batch[batch_idxes[i_batch]][i_sum_job]:
-                        save_index.append(i_sum_job)
-                        features_all = torch.cat((features_all, torch.unsqueeze(feat_opt[i_batch][ope_step_batch[batch_idxes[i_batch]][i_sum_job]], dim=0)), dim=0)
-            features_all = self.aggregate_dif(features_all, discount_r)
-            for i_sum_job in range(len(save_index)):
-                feat_opt[i_batch][save_index[i_sum_job]] = features_all[i_sum_job].clone()
-        feat_opt = self.project(feat_opt)
+
+        x = features[0].clone()
+        device = x.device
+        dtype  = x.dtype
+
+        batch_idxes = torch.as_tensor(batch_idxes, device=device, dtype=torch.long)
+        x = x.index_select(dim=0, index=batch_idxes)
+
+        s_all = torch.as_tensor(ope_step_batch, device=device, dtype=torch.long).index_select(0, batch_idxes)
+        e_all = torch.as_tensor(end_ope_biases_batch, device=device, dtype=torch.long).index_select(0, batch_idxes)
+        B, N, D = x.shape
+        J = s_all.shape[1]
+
+        t_idx = torch.arange(N, device=device).view(1, 1, N)
+        s_bj  = s_all.unsqueeze(-1)
+        e_bj  = e_all.unsqueeze(-1)
+        valid_job = (s_all <= e_all)
+
+        if (~valid_job.any(dim=1)).any():
+            raise Exception("None")
+
+        M = (t_idx > s_bj) & (t_idx <= e_bj) & valid_job.unsqueeze(-1)
+
+        dist = (t_idx - s_bj).clamp_min(0)
+        rpow = torch.pow(x.new_tensor(discount_r), dist.to(x.dtype))
+
+        x_t  = x.unsqueeze(1)
+        x_tm1 = torch.roll(x, shifts=1, dims=1).unsqueeze(1)
+
+        agg_pre = self.agg_f_w(x_t).expand(-1, J, -1, -1)
+        agg_sub = self.agg_f_w(x_tm1 * rpow.unsqueeze(-1))
+        new_bjt = (agg_pre + agg_sub) * M.unsqueeze(-1)
+
+        new_bt  = new_bjt.sum(dim=1)
+        tgt_mask = M.any(dim=1)
+        x = torch.where(tgt_mask.unsqueeze(-1), new_bt, x)
+
+        idx_s = s_all.clamp(min=0, max=N-1).unsqueeze(-1).expand(B, J, D)
+        feat_at_s = x.gather(dim=1, index=idx_s)
+
+        feat_job_new = self.aggregate_dif(feat_at_s, discount_r, valid_job)
+
+        job_slot = x[:, :J, :]
+        job_slot = torch.where(valid_job.unsqueeze(-1), feat_job_new, job_slot)
+        x = torch.cat([job_slot, x[:, J:, :]], dim=1)
+
+        feat_opt = self.project(x)
         feat_opt = self.leaky_relu(feat_opt)
         return feat_opt
 
@@ -136,30 +146,33 @@ class RGCN(nn.Module):
                 m.bias.detach().zero_()
 
     def forward(self, ope_ma_adj_batch, batch_idxes, feat):
-        h_opt = self.feat_drop(feat[0])
-        h_mas = self.feat_drop(feat[1])
-        h_edg = self.fc_edge(feat[2].unsqueeze(-1)).squeeze(-1)
-        feat_opt = self.fc_w0(h_opt)
-        feat_opt_re = torch.clone(feat_opt)
+        device = feat[0].device
+        idx = torch.as_tensor(batch_idxes, device=device, dtype=torch.long)
 
-        v_b = self.v.view(self.num_bases, self._in_mas_feats*self._out_feats)
+        h_opt = self.feat_drop(feat[0].index_select(0, idx))
+        h_mas = self.feat_drop(feat[1].index_select(0, idx))
+        e_raw = feat[2].index_select(0, idx)
+        adj = ope_ma_adj_batch.index_select(0, idx)
+
+        h_edg = self.fc_edge(e_raw.unsqueeze(-1)).squeeze(-1)
+        feat_opt = self.fc_w0(h_opt)
+        feat_opt_re = feat_opt.clone()
+
+        v_b = self.v.view(self.num_bases, self._in_mas_feats * self._out_feats)
         w_r = (self.coeff @ v_b).view(self.num_types, self._in_mas_feats, self._out_feats)
 
-        for i_batch in range(len(batch_idxes.detach().tolist())):
+        mask = (adj == 1).to(h_edg.dtype)
+        weights = h_edg * mask
 
-            for i_opt_num in range(len(feat_opt[0])):
-                # try:
-                #     feat_edj_t = h_edg[i_batch][i_opt_num]
-                # except IndexError:
-                #     print("wrong")
-                feat_edj_t = h_edg[i_batch][i_opt_num]
+        agg_in = (weights.unsqueeze(-1) * h_mas.unsqueeze(1)).sum(dim=2)
 
-                mask = (ope_ma_adj_batch[i_batch][i_opt_num] == 1).unsqueeze(1)
-                feat_mas_lip = h_mas[i_batch] * mask
-                feat_mas_w = feat_edj_t @ feat_mas_lip @ w_r
-                mas_w = feat_mas_w.clone().view(-1)
-                mas_w = self.fc_ope_ma(mas_w)
-                feat_opt_re[i_batch][i_opt_num] += mas_w
+        typed = torch.einsum('bof,tfe->bote', agg_in, w_r)
+
+        typed_flat = typed.reshape(typed.shape[0] * typed.shape[1], -1)
+        mas_w = self.fc_ope_ma(typed_flat)
+        mas_w = mas_w.view(typed.shape[0], typed.shape[1], 1)
+
+        feat_opt_re = feat_opt_re + mas_w
         feat_opt_ma = self.leaky_relu_1(feat_opt_re)
         return feat_opt_ma
 
@@ -172,8 +185,9 @@ class RGCN(nn.Module):
 
 
 if __name__ == "__main__":
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    start = time.time()
     t = RGCN(in_feats=[6, 3, 4], out_feats=12, num_head=1).to(device)
-    print(t)
     f = GraphSAGE([12, 12, 12, 12], 128, 12, 1, 0).to(device)
-    print(f)
+    end = time.time()
+    print(end - start)
