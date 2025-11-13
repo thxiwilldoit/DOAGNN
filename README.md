@@ -3,10 +3,11 @@
 This is the code for our paper titled: 'Dual Operation Aggregation Graph Neural Networks for Solving Flexible Job-Shop Scheduling Problem with Reinforcement Learning', which has been accepted by WWW2025 (The ACM Web Conference 2025). We encourage everyone to use this code and cite our paper:
 
 ```
-@inproceedings{zhao2025fjsp,
+@inproceedings{zhao2025dual,
   title={Dual Operation Aggregation Graph Neural Networks for Solving Flexible Job-Shop Scheduling Problem with Reinforcement Learning},
-  author={Peng Zhao, You Zhou, Di Wang, Zhiguang Cao, Yubin Xiao, Xuan Wu, Yuanshu Li, Hongjia Liu, Wei Du, Yuan Jiang, Liupu Wang},
-  booktitle={Proceedings of the ACM Web Conference 2025},
+  author={Zhao, Peng and Zhou, You and Wang, Di and Cao, Zhiguang and Xiao, Yubin and Wu, Xuan and Li, Yuanshu and Liu, Hongjia and Du, Wei and Jiang, Yuan and others},
+  booktitle={Proceedings of the ACM on Web Conference 2025},
+  pages={4089--4100},
   year={2025}
 }
 ```
